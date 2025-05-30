@@ -15,8 +15,8 @@ class ExtractLegsTests(unittest.TestCase):
     def _test_extract_leg(self, path, expected):
         with open(path, 'rb') as fh:
             pdf = pymupdf.open(stream=fh.read())
-        actual = db_pkpass.extract_legs(pdf)
-        self.assertEqual(actual, expected)
+        _header, legs = db_pkpass.extract(pdf)
+        self.assertEqual(legs, expected)
 
     def test_normalpreis(self):
         self._test_extract_leg('muster/Muster 918-9 Normalpreis.pdf', [

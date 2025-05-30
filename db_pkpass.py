@@ -79,14 +79,6 @@ def extract_barcodes(pdf):
     return barcodes
 
 
-def parse_leg_dt(datestr, timestr, prefix, start):
-    f = f'%d.%m.%Y {prefix} %H:%M'
-    dt = strptime(f'{datestr}{start.year} {timestr}', f)
-    if dt < start:
-        dt = strptime(f'{datestr}{start.year + 1} {timestr}', f)
-    return dt
-
-
 def iter_lines(pdf):
     last_x = 0
     last_y = 0
@@ -106,85 +98,106 @@ def iter_lines(pdf):
         yield line
 
 
-def extract_legs(pdf):
-    legs = []
-    started = False
-    validity = extract_validity(pdf)
-    for line in iter_lines(pdf):
+def parse_leg_dt(datestr, timestr, prefix, start):
+    f = f'%d.%m.%Y {prefix} %H:%M'
+    dt = strptime(f'{datestr}{start.year} {timestr}', f)
+    if dt < start:
+        dt = strptime(f'{datestr}{start.year + 1} {timestr}', f)
+    return dt
+
+
+def parse_validity(text):
+    if 'bis' in text:
+        s_start, s_end = text.split(' bis ')
+        try:
+            start = strptime(s_start, '%d.%m.%Y %H:%M Uhr')
+            end = strptime(s_end, '%d.%m.%Y %H:%M Uhr')
+        except ValueError:
+            start = strptime(s_start, '%d.%m.%Y')
+            end = strptime(s_end, '%d.%m.%Y')
+    else:
+        s_start = text.removeprefix('Fahrtantritt am ')
+        start = strptime(s_start, '%d.%m.%Y')
+        end = start + datetime.timedelta(days=1)
+    return start, end
+
+
+def extract_header(lines):
+    for i, line in enumerate(lines):
         text = ' '.join(line)
-        if text.startswith('Halt\nDatum\nZeit\nGleis'):
-            started = True
-        elif not started or text.startswith('Ihre Reiseverbindung '):
-            pass
-        elif text.startswith('Wichtige Nutzungshinweise') or not text.strip():
+        if i == 1:
+            title = text
+        elif '\nAuftragsnummer: ' in text:
+            id_label = 'Auftragsnummer'
+            id_value = text.split('\nAuftragsnummer: ', 1)[1]
+        elif '\nBahnCard-Nr.: ' in text:
+            id_label = 'BahnCard-Nr.'
+            id_value = text.split('\nBahnCard-Nr.: ', 1)[1]
+        elif text.startswith('Gültigkeit: '):
+            validity = parse_validity(text.removeprefix('Gültigkeit: '))
+        elif text.startswith('Fahrtantritt am '):
+            validity = parse_validity(text.removeprefix('Fahrtantritt am '))
+        elif text.startswith('Halt\nDatum\nZeit\nGleis'):
             break
+    return {
+        'title': title,
+        'id_label': id_label,
+        'id_value': id_value,
+        'valid_from': validity[0],
+        'valid_until': validity[1],
+    }
+
+
+def extract_leg(line, start):
+    station1, station2 = (v.strip() for v in line[0].split('\n'))
+    date1, date2 = (v.strip() for v in line[1].split('\n'))
+    time1, time2 = (v.strip() for v in line[2].split('\n'))
+    leg = {
+        'start': {
+            'station': station1,
+            'datetime': parse_leg_dt(date1, time1, 'ab', start)
+        },
+        'destination': {
+            'station': station2,
+            'datetime': parse_leg_dt(date2, time2, 'an', start)
+        },
+    }
+
+    if len(line) > 3:
+        platform1, platform2 = (v.strip() for v in line[3].split('\n'))
+        if platform1:
+            leg['start']['platform'] = platform1
+        if platform2:
+            leg['destination']['platform'] = platform2
+
+    if len(line) > 4:
+        leg['train'] = line[4].strip().replace('\n', ' ')
+    else:
+        leg['train'] = leg['destination'].pop('platform')
+
+    if len(line) > 5:
+        leg['comment'] = line[5].strip().replace('\n', ' ')
+
+    return leg
+
+
+def extract(pdf):
+    lines = iter_lines(pdf)
+    header = extract_header(lines)
+
+    legs = []
+    for line in lines:
+        text = ' '.join(line)
+        if text.startswith('Wichtige Nutzungshinweise') or not text.strip():
+            break
+        elif text.startswith('Ihre Reiseverbindung '):
+            pass
+        elif text.startswith('Halt\nDatum\nZeit\nGleis'):
+            pass
         else:
-            station1, station2 = (v.strip() for v in line[0].split('\n'))
-            date1, date2 = (v.strip() for v in line[1].split('\n'))
-            time1, time2 = (v.strip() for v in line[2].split('\n'))
-            legs.append({
-                'start': {
-                    'station': station1,
-                    'datetime': parse_leg_dt(date1, time1, 'ab', validity[0])
-                },
-                'destination': {
-                    'station': station2,
-                    'datetime': parse_leg_dt(date2, time2, 'an', validity[0])
-                },
-            })
+            legs.append(extract_leg(line, header['valid_from']))
 
-            if len(line) > 3:
-                platform1, platform2 = (v.strip() for v in line[3].split('\n'))
-                if platform1:
-                    legs[-1]['start']['platform'] = platform1
-                if platform2:
-                    legs[-1]['destination']['platform'] = platform2
-
-            if len(line) > 4:
-                legs[-1]['train'] = line[4].strip().replace('\n', ' ')
-            else:
-                legs[-1]['train'] = legs[-1]['destination'].pop('platform')
-
-            if len(line) > 5:
-                legs[-1]['comment'] = line[5].strip().replace('\n', ' ')
-
-    return legs
-
-
-def extract_id(pdf):
-    for page in pdf:
-        for text in page.get_text().split('\n'):
-            for label in ['Auftragsnummer', 'BahnCard-Nr.']:
-                key = f'{label}: '
-                if text.startswith(key):
-                    return label, text[len(key):]
-    raise ValueError('No ID found')
-
-
-def extract_title(pdf):
-    return pdf[0].get_text('blocks')[1][4].strip()
-
-
-def extract_validity(pdf):
-    key1 = 'Gültigkeit: '
-    key2 = 'Fahrtantritt am '
-    for page in pdf:
-        for text in page.get_text().split('\n'):
-            if text.startswith(key1):
-                s_start, s_end = text[len(key1):].split(' bis ')
-                try:
-                    start = strptime(s_start, '%d.%m.%Y %H:%M Uhr')
-                    end = strptime(s_end, '%d.%m.%Y %H:%M Uhr')
-                except ValueError:
-                    start = strptime(s_start, '%d.%m.%Y')
-                    end = strptime(s_end, '%d.%m.%Y')
-                return start, end
-            elif text.startswith(key2):
-                s_start = text[len(key2):]
-                start = strptime(s_start, '%d.%m.%Y')
-                end = start + datetime.timedelta(days=1)
-                return start, end
-    raise ValueError('No validity information found')
+    return header, legs
 
 
 def format_stop(stop, train=None):
@@ -206,22 +219,20 @@ def format_legs(legs):
 
 
 def extract_content(pdf):
-    title = extract_title(pdf)
-    id_label, id_value = extract_id(pdf)
-    validity = extract_validity(pdf)
+    header, legs = extract(pdf)
 
     data = {
         'formatVersion': 1,
         'organizationName': 'Deutsche Bahn AG',
         'passTypeIdentifier': 'ticket.ce9e.org',
         'teamIdentifier': 'XXXXXXXXXX',
-        'serialNumber': id_value,
-        'description': title,
-        'expirationDate': validity[1].isoformat(),
+        'serialNumber': header['id_value'],
+        'description': header['title'],
+        'expirationDate': header['valid_until'].isoformat(),
         'relevantDates': [
             {
-                'startDate': validity[0].isoformat(),
-                'endDate': validity[1].isoformat(),
+                'startDate': header['valid_from'].isoformat(),
+                'endDate': header['valid_until'].isoformat(),
             },
         ],
         'barcodes': [
@@ -237,14 +248,13 @@ def extract_content(pdf):
             'auxiliaryFields': [
                 {
                     'key': 'id',
-                    'label': id_label,
-                    'value': id_value,
+                    'label': header['id_label'],
+                    'value': header['id_value'],
                 },
             ],
         },
     }
 
-    legs = extract_legs(pdf)
     if legs:
         start = legs[0]['start']['station']
         destination = legs[-1]['destination']['station']

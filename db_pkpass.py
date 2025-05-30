@@ -97,9 +97,7 @@ def extract_legs(pdf):
             text = text.rstrip('\n').replace(',\n', ', ')
             if text.startswith('Halt\nDatum\nZeit\nGleis'):
                 state = 1
-            elif state == 0:
-                pass
-            elif text.startswith('Ihre Reiseverbindung und Reservierung'):
+            elif state == 0 or text.startswith('Ihre Reiseverbindung '):
                 pass
             elif text.startswith('Wichtige Nutzungshinweise') or not text.strip():
                 break
@@ -155,12 +153,18 @@ def extract_legs(pdf):
     return legs
 
 
-def extract_order_id(pdf):
-    key = 'Auftragsnummer: '
+def extract_id(pdf):
     for page in pdf:
         for text in page.get_text().split('\n'):
-            if text.startswith(key):
-                return text[len(key):]
+            for label in ['Auftragsnummer', 'BahnCard-Nr.']:
+                key = f'{label}: '
+                if text.startswith(key):
+                    return label, text[len(key):]
+    raise ValueError('No order ID found')
+
+
+def extract_title(pdf):
+    return pdf[0].get_text('blocks')[1][4].strip()
 
 
 def extract_validity(pdf):
@@ -170,14 +174,19 @@ def extract_validity(pdf):
         for text in page.get_text().split('\n'):
             if text.startswith(key1):
                 s_start, s_end = text[len(key1):].split(' bis ')
-                start = strptime(s_start, '%d.%m.%Y %H:%M Uhr')
-                end = strptime(s_end, '%d.%m.%Y %H:%M Uhr')
+                try:
+                    start = strptime(s_start, '%d.%m.%Y %H:%M Uhr')
+                    end = strptime(s_end, '%d.%m.%Y %H:%M Uhr')
+                except ValueError:
+                    start = strptime(s_start, '%d.%m.%Y')
+                    end = strptime(s_end, '%d.%m.%Y')
                 return start, end
             elif text.startswith(key2):
                 s_start = text[len(key2):]
                 start = strptime(s_start, '%d.%m.%Y')
                 end = start + datetime.timedelta(days=1)
                 return start, end
+    raise ValueError('No validity information found')
 
 
 def format_stop(stop, train=None):
@@ -199,21 +208,17 @@ def format_legs(legs):
 
 
 def extract_content(pdf):
-    order_id = extract_order_id(pdf)
+    title = extract_title(pdf)
+    id_label, id_value = extract_id(pdf)
     validity = extract_validity(pdf)
 
-    legs = extract_legs(pdf, validity[0])
-    start = legs[0]['start']['station']
-    destination = legs[-1]['destination']['station']
-    date = legs[0]['start']['datetime']
-
-    return {
+    data = {
         'formatVersion': 1,
         'organizationName': 'Deutsche Bahn AG',
         'passTypeIdentifier': 'ticket.ce9e.org',
         'teamIdentifier': 'XXXXXXXXXX',
-        'serialNumber': order_id,
-        'description': f'{start} → {destination} ({date.date().isoformat()})',
+        'serialNumber': id_value,
+        'description': title,
         'expirationDate': validity[1].isoformat(),
         'relevantDates': [
             {
@@ -231,27 +236,38 @@ def extract_content(pdf):
         ],
         'boardingPass': {
             'transitType': 'PKTransitTypeTrain',
-            'secondaryFields': [
+            'auxiliaryFields': [
                 {
-                    'key': 'date',
-                    'label': 'Datum',
-                    'dateStyle': 'PKDateStyleFull',
-                    'timeStyle': 'PKDateStyleNone',
-                    'value': date.isoformat(),
-                },
-                {
-                    'key': 'legs',
-                    'label': 'Reiseplan',
-                    'value': format_legs(legs),
-                },
-                {
-                    'key': 'order-id',
-                    'label': 'Auftragsnummer',
-                    'value': order_id,
+                    'key': 'id',
+                    'label': id_label,
+                    'value': id_value,
                 },
             ],
         },
     }
+
+    legs = extract_legs(pdf)
+    if legs:
+        start = legs[0]['start']['station']
+        destination = legs[-1]['destination']['station']
+        date = legs[0]['start']['datetime']
+        data['description'] = f'{start} → {destination} ({date.date().isoformat()})'
+        data['boardingPass']['secondaryFields'] = [
+            {
+                'key': 'date',
+                'label': 'Datum',
+                'dateStyle': 'PKDateStyleFull',
+                'timeStyle': 'PKDateStyleNone',
+                'value': date.isoformat(),
+            },
+            {
+                'key': 'legs',
+                'label': 'Reiseplan',
+                'value': format_legs(legs),
+            },
+        ]
+
+    return data
 
 
 if __name__ == '__main__':

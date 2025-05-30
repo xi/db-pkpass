@@ -87,68 +87,66 @@ def parse_leg_dt(datestr, timestr, prefix, start):
     return dt
 
 
+def iter_lines(pdf):
+    last_x = 0
+    last_y = 0
+    line = []
+    for page in pdf:
+        for x, y, _, _, text, _, _ in page.get_text('blocks'):
+            text = text.rstrip('\n').replace(',\n', ', ')
+            if x <= last_x or y > last_y:
+                if line:
+                    yield line
+                line = [text]
+            else:
+                line.append(text)
+            last_x = x
+            last_y = y
+    if line:
+        yield line
+
+
 def extract_legs(pdf):
     legs = []
-    state = 0
-    last_x = 0
+    started = False
     validity = extract_validity(pdf)
-    for page in pdf:
-        for x, _, _, _, text, _, _ in page.get_text('blocks'):
-            text = text.rstrip('\n').replace(',\n', ', ')
-            if text.startswith('Halt\nDatum\nZeit\nGleis'):
-                state = 1
-            elif state == 0 or text.startswith('Ihre Reiseverbindung '):
-                pass
-            elif text.startswith('Wichtige Nutzungshinweise') or not text.strip():
-                break
-            elif state == 1 or x < last_x:
-                v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
-                legs.append({
-                    'start': {
-                        'station': v1,
-                    },
-                    'destination': {
-                        'station': v2,
-                    },
-                })
-                state = 2
-            elif state == 2:
-                v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
-                legs[-1]['start']['date'] = v1
-                legs[-1]['destination']['date'] = v2
-                state = 3
-            elif state == 3:
-                v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
-                date1 = legs[-1]['start'].pop('date')
-                date2 = legs[-1]['destination'].pop('date')
-                legs[-1]['start']['datetime'] = parse_leg_dt(
-                    date1, v1, 'ab', validity[0]
-                )
-                legs[-1]['destination']['datetime'] = parse_leg_dt(
-                    date2, v2, 'an', validity[0]
-                )
-                state = 4
-            elif state == 4:
-                v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
-                if v1:
-                    legs[-1]['start']['platform'] = v1
-                if v2:
-                    legs[-1]['destination']['platform'] = v2
-                state = 5
-            elif state == 5:
-                legs[-1]['train'] = text.strip().replace('\n', ' ')
-                state = 6
-            elif state == 6:
-                legs[-1]['comment'] = text.strip().replace('\n', ' ')
-                state = 7
+    for line in iter_lines(pdf):
+        text = ' '.join(line)
+        if text.startswith('Halt\nDatum\nZeit\nGleis'):
+            started = True
+        elif not started or text.startswith('Ihre Reiseverbindung '):
+            pass
+        elif text.startswith('Wichtige Nutzungshinweise') or not text.strip():
+            break
+        else:
+            station1, station2 = (v.strip() for v in line[0].split('\n'))
+            date1, date2 = (v.strip() for v in line[1].split('\n'))
+            time1, time2 = (v.strip() for v in line[2].split('\n'))
+            legs.append({
+                'start': {
+                    'station': station1,
+                    'datetime': parse_leg_dt(date1, time1, 'ab', validity[0])
+                },
+                'destination': {
+                    'station': station2,
+                    'datetime': parse_leg_dt(date2, time2, 'an', validity[0])
+                },
+            })
+
+            if len(line) > 3:
+                platform1, platform2 = (v.strip() for v in line[3].split('\n'))
+                if platform1:
+                    legs[-1]['start']['platform'] = platform1
+                if platform2:
+                    legs[-1]['destination']['platform'] = platform2
+
+            if len(line) > 4:
+                legs[-1]['train'] = line[4].strip().replace('\n', ' ')
             else:
-                raise ValueError
+                legs[-1]['train'] = legs[-1]['destination'].pop('platform')
 
-            last_x = x
-
-    for leg in legs:
-        if 'train' not in leg:
-            leg['train'] = leg['destination'].pop('platform')
+            if len(line) > 5:
+                legs[-1]['comment'] = line[5].strip().replace('\n', ' ')
 
     return legs
 
@@ -160,7 +158,7 @@ def extract_id(pdf):
                 key = f'{label}: '
                 if text.startswith(key):
                     return label, text[len(key):]
-    raise ValueError('No order ID found')
+    raise ValueError('No ID found')
 
 
 def extract_title(pdf):

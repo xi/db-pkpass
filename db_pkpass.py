@@ -60,12 +60,6 @@ def dump_pkpass(files: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
-def pdf_iter_text_lines(pdf):
-    for page in pdf:
-        text = page.get_text()
-        yield from text.split('\n')
-
-
 def extract_barcodes(pdf):
     barcodes = []
     for page in pdf:
@@ -94,57 +88,63 @@ def parse_leg_dt(datestr, timestr, prefix):
 
 
 def extract_legs(pdf):
-    raw = []
-    started = False
-    lines = pdf_iter_text_lines(pdf)
-    for line in lines:
-        line = line.strip()
-        if line.startswith('Ihre Reiseverbindung und Reservierung'):
-            assert next(lines) == 'Halt'
-            assert next(lines) == 'Datum'
-            assert next(lines) == 'Zeit'
-            assert next(lines) == 'Gleis'
-            assert next(lines) == 'Produkte'
-            assert next(lines) == 'Reservierung / Hinweise'
-            started = True
-        elif started and not line:
-            break
-        elif started:
-            raw.append(line)
-
-    i = 0
     legs = []
-    while True:
-        legs.append({
-            'train': raw[i + 8],
-            'start': {
-                'station': raw[i],
-                'datetime': parse_leg_dt(raw[i + 2], raw[i + 4], 'ab'),
-                'platform': raw[i + 6],
-            },
-            'destination': {
-                'station': raw[i + 1],
-                'datetime': parse_leg_dt(raw[i + 3], raw[i + 5], 'an'),
-                'platform': raw[i + 7],
-            },
-        })
+    state = 0
+    last_x = 0
+    for page in pdf:
+        for x, _, _, _, text, _, _ in page.get_text('blocks'):
+            if text.startswith('Halt\nDatum\nZeit\nGleis'):
+                state = 1
+            elif text.startswith('Wichtige Nutzungshinweise'):
+                break
+            elif state == 0:
+                pass
+            elif state == 1 or (state > 0 and x < last_x):
+                v1, v2 = text.rstrip('\n').split('\n')
+                legs.append({
+                    'start': {
+                        'station': v1,
+                    },
+                    'destination': {
+                        'station': v2,
+                    },
+                })
+                state = 2
+            elif state == 2:
+                v1, v2 = text.rstrip('\n').split('\n')
+                legs[-1]['start']['date'] = v1
+                legs[-1]['destination']['date'] = v2
+                state = 3
+            elif state == 3:
+                v1, v2 = text.rstrip('\n').split('\n')
+                legs[-1]['start']['datetime'] = parse_leg_dt(legs[-1]['start'].pop('date'), v1, 'ab')
+                legs[-1]['destination']['datetime'] = parse_leg_dt(legs[-1]['destination'].pop('date'), v2, 'an')
+                state = 4
+            elif state == 4:
+                v1, v2 = text.rstrip('\n').split('\n')
+                legs[-1]['start']['platform'] = v1
+                legs[-1]['destination']['platform'] = v2
+                state = 5
+            elif state == 5:
+                legs[-1]['train'] = text.strip()
+                state = 6
+            elif state == 6:
+                legs[-1]['comment'] = text.strip()
+                state = 7
+            else:
+                raise ValueError((text, state))
 
-        if i + 13 >= len(raw):
-            break
-        elif raw[i + 13].startswith('ab '):
-            i += 9
-        else:
-            legs[-1]['comment'] = raw[i + 9]
-            i += 10
+            last_x = x
 
     return legs
 
 
 def extract_order_id(pdf):
     key = 'Auftragsnummer: '
-    for line in pdf_iter_text_lines(pdf):
-        if line.startswith(key):
-            return line[len(key):]
+    for page in pdf:
+        for text in page.get_text().split('\n'):
+            if text.startswith(key):
+                return text[len(key):]
 
 
 def format_stop(stop, train=None):
@@ -164,8 +164,6 @@ def format_legs(legs):
 
 
 def extract_content(pdf):
-    # https://developer.apple.com/documentation/walletpasses/pass
-
     order_id = extract_order_id(pdf)
 
     legs = extract_legs(pdf)

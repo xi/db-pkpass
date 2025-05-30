@@ -216,18 +216,21 @@ def extract_content(pdf):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('path')
+    parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
     with open(args.path, 'rb') as fh:
         pdf = pymupdf.open(stream=fh.read())
     content = extract_content(pdf)
 
-    output_path = args.path.replace('.pdf', '.pkpass')
-    with open(output_path, 'wb') as fh:
-        fh.write(dump_pkpass({
-            'pass.json': json.dumps(content).encode('utf-8'),
-            'icon.png': ICON,
-            'logo.png': ICON,
-        }))
-
-    print(f'written to {output_path}')
+    if args.debug:
+        print(json.dumps(content, indent=2))
+    else:
+        output_path = args.path.replace('.pdf', '.pkpass')
+        with open(output_path, 'wb') as fh:
+            fh.write(dump_pkpass({
+                'pass.json': json.dumps(content).encode('utf-8'),
+                'icon.png': ICON,
+                'logo.png': ICON,
+            }))
+        print(f'written to {output_path}')

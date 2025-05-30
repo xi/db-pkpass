@@ -61,15 +61,15 @@ def dump_pkpass(files: dict[str, bytes]) -> bytes:
 
 
 def pdf_iter_text_lines(pdf):
-    for i in range(len(pdf)):
-        text = pdf.get_page_text(i)
+    for page in pdf:
+        text = page.get_text()
         yield from text.split('\n')
 
 
 def extract_barcodes(pdf):
     barcodes = []
-    for i in range(len(pdf)):
-        for xref in pdf.get_page_images(i):
+    for page in pdf:
+        for xref in page.get_images():
             img_data = pdf.extract_image(xref[0])
             arr = numpy.frombuffer(img_data['image'], numpy.uint8)
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)

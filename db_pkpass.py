@@ -93,14 +93,17 @@ def extract_legs(pdf):
     last_x = 0
     for page in pdf:
         for x, _, _, _, text, _, _ in page.get_text('blocks'):
+            text = text.rstrip('\n').replace(',\n', ', ')
             if text.startswith('Halt\nDatum\nZeit\nGleis'):
                 state = 1
-            elif text.startswith('Wichtige Nutzungshinweise'):
-                break
             elif state == 0:
                 pass
-            elif state == 1 or (state > 0 and x < last_x):
-                v1, v2 = text.rstrip('\n').split('\n')
+            elif text.startswith('Ihre Reiseverbindung und Reservierung'):
+                pass
+            elif text.startswith('Wichtige Nutzungshinweise') or not text.strip():
+                break
+            elif state == 1 or x < last_x:
+                v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
                 legs.append({
                     'start': {
                         'station': v1,
@@ -111,30 +114,38 @@ def extract_legs(pdf):
                 })
                 state = 2
             elif state == 2:
-                v1, v2 = text.rstrip('\n').split('\n')
+                v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
                 legs[-1]['start']['date'] = v1
                 legs[-1]['destination']['date'] = v2
                 state = 3
             elif state == 3:
-                v1, v2 = text.rstrip('\n').split('\n')
-                legs[-1]['start']['datetime'] = parse_leg_dt(legs[-1]['start'].pop('date'), v1, 'ab')
-                legs[-1]['destination']['datetime'] = parse_leg_dt(legs[-1]['destination'].pop('date'), v2, 'an')
+                v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
+                date1 = legs[-1]['start'].pop('date')
+                date2 = legs[-1]['destination'].pop('date')
+                legs[-1]['start']['datetime'] = parse_leg_dt(date1, v1, 'ab')
+                legs[-1]['destination']['datetime'] = parse_leg_dt(date2, v2, 'an')
                 state = 4
             elif state == 4:
-                v1, v2 = text.rstrip('\n').split('\n')
-                legs[-1]['start']['platform'] = v1
-                legs[-1]['destination']['platform'] = v2
+                v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
+                if v1:
+                    legs[-1]['start']['platform'] = v1
+                if v2:
+                    legs[-1]['destination']['platform'] = v2
                 state = 5
             elif state == 5:
-                legs[-1]['train'] = text.strip()
+                legs[-1]['train'] = text.strip().replace('\n', ' ')
                 state = 6
             elif state == 6:
-                legs[-1]['comment'] = text.strip()
+                legs[-1]['comment'] = text.strip().replace('\n', ' ')
                 state = 7
             else:
-                raise ValueError((text, state))
+                raise ValueError
 
             last_x = x
+
+    for leg in legs:
+        if 'train' not in leg:
+            leg['train'] = leg['destination'].pop('platform')
 
     return legs
 
@@ -149,7 +160,9 @@ def extract_order_id(pdf):
 
 def format_stop(stop, train=None):
     t = stop['datetime'].strftime('%H:%M')
-    s = f'{t} {stop["station"]} #{stop["platform"]}'
+    s = f'{t} {stop["station"]}'
+    if stop.get('platform'):
+        s += f' #{stop["platform"]}'
     if train:
         s = f'{s} - {train}'
     return s

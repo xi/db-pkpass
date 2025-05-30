@@ -25,6 +25,8 @@ BARCODE_FORMATS = zxingcpp.BarcodeFormats(
     or zxingcpp.BarcodeFormat.QRCode
 )
 
+TZ = ZoneInfo('Europe/Berlin')
+
 ICON = base64.b64decode("""
 iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAAXNSR0IArs4c6QAAAARnQU1BAACx
 jwv8YQUAAAAgY0hSTQAAeiYAAICEAAD6AAAAgOgAAHUwAADqYAAAOpgAABdwnLpRPAAAADNQTFRF
@@ -60,6 +62,10 @@ def dump_pkpass(files: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def strptime(s, _format):
+    return datetime.datetime.strptime(s, _format).astimezone(TZ)
+
+
 def extract_barcodes(pdf):
     barcodes = []
     for page in pdf:
@@ -73,17 +79,11 @@ def extract_barcodes(pdf):
     return barcodes
 
 
-def parse_leg_dt(datestr, timestr, prefix):
-    tz = ZoneInfo('Europe/Berlin')
-    now = datetime.datetime.now(tz=tz)
-    year = now.year
-
-    f = f'%Y %d.%m. {prefix} %H:%M'
-    s = f'{year} {datestr} {timestr}'
-    dt = datetime.datetime.strptime(s, f).astimezone(tz)
-    if dt < now:
-        s = f'{year + 1} {datestr} {timestr}'
-        dt = datetime.datetime.strptime(s, f).astimezone(tz)
+def parse_leg_dt(datestr, timestr, prefix, start):
+    f = f'%d.%m.%Y {prefix} %H:%M'
+    dt = strptime(f'{datestr}{start.year} {timestr}', f)
+    if dt < start:
+        dt = strptime(f'{datestr}{start.year + 1} {timestr}', f)
     return dt
 
 
@@ -91,6 +91,7 @@ def extract_legs(pdf):
     legs = []
     state = 0
     last_x = 0
+    validity = extract_validity(pdf)
     for page in pdf:
         for x, _, _, _, text, _, _ in page.get_text('blocks'):
             text = text.rstrip('\n').replace(',\n', ', ')
@@ -122,8 +123,12 @@ def extract_legs(pdf):
                 v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
                 date1 = legs[-1]['start'].pop('date')
                 date2 = legs[-1]['destination'].pop('date')
-                legs[-1]['start']['datetime'] = parse_leg_dt(date1, v1, 'ab')
-                legs[-1]['destination']['datetime'] = parse_leg_dt(date2, v2, 'an')
+                legs[-1]['start']['datetime'] = parse_leg_dt(
+                    date1, v1, 'ab', validity[0]
+                )
+                legs[-1]['destination']['datetime'] = parse_leg_dt(
+                    date2, v2, 'an', validity[0]
+                )
                 state = 4
             elif state == 4:
                 v1, v2 = (v.strip() for v in text.rstrip('\n').split('\n'))
@@ -158,6 +163,23 @@ def extract_order_id(pdf):
                 return text[len(key):]
 
 
+def extract_validity(pdf):
+    key1 = 'Gültigkeit: '
+    key2 = 'Fahrtantritt am '
+    for page in pdf:
+        for text in page.get_text().split('\n'):
+            if text.startswith(key1):
+                s_start, s_end = text[len(key1):].split(' bis ')
+                start = strptime(s_start, '%d.%m.%Y %H:%M Uhr')
+                end = strptime(s_end, '%d.%m.%Y %H:%M Uhr')
+                return start, end
+            elif text.startswith(key2):
+                s_start = text[len(key2):]
+                start = strptime(s_start, '%d.%m.%Y')
+                end = start + datetime.timedelta(days=1)
+                return start, end
+
+
 def format_stop(stop, train=None):
     t = stop['datetime'].strftime('%H:%M')
     s = f'{t} {stop["station"]}'
@@ -178,8 +200,9 @@ def format_legs(legs):
 
 def extract_content(pdf):
     order_id = extract_order_id(pdf)
+    validity = extract_validity(pdf)
 
-    legs = extract_legs(pdf)
+    legs = extract_legs(pdf, validity[0])
     start = legs[0]['start']['station']
     destination = legs[-1]['destination']['station']
     date = legs[0]['start']['datetime']
@@ -191,6 +214,13 @@ def extract_content(pdf):
         'teamIdentifier': 'XXXXXXXXXX',
         'serialNumber': order_id,
         'description': f'{start} → {destination} ({date.date().isoformat()})',
+        'expirationDate': validity[1].isoformat(),
+        'relevantDates': [
+            {
+                'startDate': validity[0].isoformat(),
+                'endDate': validity[1].isoformat(),
+            },
+        ],
         'barcodes': [
             {
                 'format': _format,

@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import io
 import json
+import os
 import zipfile
 from zoneinfo import ZoneInfo
 
@@ -284,14 +285,18 @@ if __name__ == '__main__':
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
-    with open(args.path, 'rb') as fh:
-        pdf = pymupdf.open(stream=fh.read())
-    content = extract_content(pdf)
+    if args.path.endswith('.json'):
+        with open(args.path) as fh:
+            content = json.load(fh)
+    else:
+        with open(args.path, 'rb') as fh:
+            pdf = pymupdf.open(stream=fh.read())
+        content = extract_content(pdf)
 
     if args.debug:
         print(json.dumps(content, indent=2))
     else:
-        output_path = args.path.replace('.pdf', '.pkpass')
+        output_path = os.path.splitext(args.path)[0] + '.pkpass'
         with open(output_path, 'wb') as fh:
             fh.write(dump_pkpass({
                 'pass.json': json.dumps(content).encode('utf-8'),

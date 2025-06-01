@@ -9,6 +9,14 @@ $ python3 -m pip install -r requirements.txt
 $ python3 db_pkpass.py /path/to/my/ticket.pdf
 ```
 
+You can also make manual adjustments before packing the pkpass file:
+
+```sh
+$ python3 db_pkpass.py /path/to/my/ticket.pdf --debug > ticket.json
+$ $EDITOR ticket.json
+$ python3 db_pkpass.py ticket.json
+```
+
 # Limitations
 
 -   The PKPass file does not contain a signature, so it will not work with
